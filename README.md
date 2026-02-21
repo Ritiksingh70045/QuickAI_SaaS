@@ -11,7 +11,7 @@ Generate Article – Create structured, SEO-friendly articles instantly.
 
 Generate Blog Title – Get catchy, high-converting blog titles in one click.
 
-🎨 Image Processing
+🎨  Image Processing
 
 Generate Image – AI-generated visuals from text prompts.
 
