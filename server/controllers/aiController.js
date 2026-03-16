@@ -7,6 +7,7 @@ import axios from "axios";
 import { v2 as cloudinary } from "cloudinary";
 import fs from "fs";
 import * as pdfParse from "pdf-parse/node";
+import FormData from "form-data";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -136,19 +137,29 @@ export const generateImage = async (req, res) => {
       {
         headers: {
           "x-api-key": process.env.CLIPDROP_API_KEY,
-          responseType: "arraybuffer",
         },
+        responseType: "arraybuffer",
       },
     );
+    console.log(data.length);
+    const buffer = Buffer.from(data, "binary");
 
-    const base64Image = `data:image/png;base64 , ${Buffer.from(data, "binary").toString("base64")}`;
+    const { secure_url } = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { resource_type: "image" },
+        (error, result) => {
+          if (error) reject(error);
+          else resolve(result);
+        },
+      );
 
-    const { secure_url } = await cloudinary.uploader.upload(base64Image);
+      stream.end(buffer);
+    });
     await sql`INSERT INTO creations (user_id , prompt , content , type , publish) VALUES (${userId} , ${prompt} , ${secure_url} , 'image' , ${publish ?? false})`;
 
     res.json({ success: true, content: secure_url });
   } catch (error) {
-    console.error("Error generating article:", error);
+    console.error("Error generating Image:", error);
     res.status(500).json({ success: false, message: "Error generating image" });
   }
 };
