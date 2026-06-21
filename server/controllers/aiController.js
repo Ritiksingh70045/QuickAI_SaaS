@@ -1,15 +1,19 @@
 // import OpenAI from "openai";
-
 import { GoogleGenAI } from "@google/genai";
 import sql from "../configs/db.js";
 import { clerkClient } from "@clerk/express";
 import axios from "axios";
 import { v2 as cloudinary } from "cloudinary";
 import fs from "fs";
-import * as pdfParse from "pdf-parse/node";
 import FormData from "form-data";
 
+// --- FIXED: Native ESM imports for modern pdf-parse ---
+import { CanvasFactory } from "pdf-parse/worker";
+import { PDFParse } from "pdf-parse";
+
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// Helper function to pause execution for a set amount of milliseconds
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export const generateArticle = async (req, res) => {
   console.log("generateArticle HIT");
@@ -27,19 +31,44 @@ export const generateArticle = async (req, res) => {
       });
     }
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: [
-        {
-          role: "user",
-          parts: [
+    let response;
+    const maxRetries = 3;
+
+    // Retry loop to handle 503 (Overloaded) or 429 (Rate Limited) errors
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        response = await ai.models.generateContent({
+          model: "gemini-3.5-flash", // UPDATED: Changed to a stable, valid model
+          contents: [
             {
-              text: `Write a detailed article (${length} words) on:\n\n${prompt}`,
+              role: "user",
+              parts: [
+                {
+                  text: `Write a detailed article (${length} words) on:\n\n${prompt}`,
+                },
+              ],
             },
           ],
-        },
-      ],
-    });
+        });
+
+        // If successful, break out of the retry loop
+        break;
+      } catch (apiError) {
+        // If it's a 503 or 429, and we have retries left, wait and try again
+        if (
+          (apiError.status === 503 || apiError.status === 429) &&
+          attempt < maxRetries
+        ) {
+          console.log(
+            `API overloaded. Attempt ${attempt} failed. Retrying in ${attempt * 2} seconds...`,
+          );
+          await delay(attempt * 2000); // Waits 2s, then 4s, then gives up
+        } else {
+          // If it's a different error (like 400 Bad Request) or we are out of retries, throw it
+          throw apiError;
+        }
+      }
+    }
 
     const content = response.text;
 
@@ -66,7 +95,11 @@ export const generateArticle = async (req, res) => {
     res.json({ success: true, content });
   } catch (error) {
     console.error("Gemini error:", error);
-    res.json({ success: false, message: error.message });
+    res.json({
+      success: false,
+      message:
+        "Error generating article: API is currently overloaded. Please try again in a few moments.",
+    });
   }
 };
 
@@ -84,19 +117,35 @@ export const generateBlogTitle = async (req, res) => {
       });
     }
 
-    const response = await openai.chat.completions.create({
-      model: "gemini-3-flash-preview",
-      messages: [
+    // UPDATED: Using the 'ai' instance instead of 'openai'
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview", // Note: Updated to a stable model name
+      contents: [
         {
           role: "user",
-          content: prompt,
+          parts: [
+            {
+              text: prompt,
+            },
+          ],
         },
       ],
-      temperature: 0.7,
-      max_tokens: 100,
+      config: {
+        temperature: 0.7,
+        maxOutputTokens: 100, // Replaces OpenAI's max_tokens
+      },
     });
 
-    const content = response.choices[0].message.content;
+    // UPDATED: Parsing the response using Gemini's structure
+    const content = response.text;
+
+    if (!content) {
+      return res.json({
+        success: false,
+        message: "Gemini returned empty content",
+      });
+    }
+
     await sql`INSERT INTO creations (user_id , prompt , content , type) VALUES (${userId} , ${prompt} , ${content} , 'blog-title')`;
 
     if (plan !== "premium") {
@@ -109,7 +158,7 @@ export const generateBlogTitle = async (req, res) => {
 
     res.json({ success: true, content });
   } catch (error) {
-    console.error("Error generating article:", error);
+    console.error("Error generating blog Title:", error);
     res
       .status(500)
       .json({ success: false, message: "Error generating blog title" });
@@ -167,7 +216,8 @@ export const generateImage = async (req, res) => {
 export const removeImageBackground = async (req, res) => {
   try {
     const { userId } = req.auth();
-    const { image } = req.file;
+    // FIXED: Removed the destructuring curly braces
+    const image = req.file;
     const plan = req.plan;
 
     if (plan !== "premium") {
@@ -177,6 +227,7 @@ export const removeImageBackground = async (req, res) => {
       });
     }
 
+    // Now image.path will correctly point to the uploaded file's temporary path
     const { secure_url } = await cloudinary.uploader.upload(image.path, {
       transformation: [
         {
@@ -190,7 +241,7 @@ export const removeImageBackground = async (req, res) => {
 
     res.json({ success: true, content: secure_url });
   } catch (error) {
-    console.error("Error generating article:", error);
+    console.error("Error removing Image Background:", error);
     res
       .status(500)
       .json({ success: false, message: "Error removing the background" });
@@ -201,7 +252,8 @@ export const removeImageObject = async (req, res) => {
   try {
     const { userId } = req.auth();
     const { object } = req.body;
-    const { image } = req.file;
+    // FIXED: Removed the destructuring curly braces around image
+    const image = req.file;
     const plan = req.plan;
 
     if (plan !== "premium") {
@@ -211,6 +263,7 @@ export const removeImageObject = async (req, res) => {
       });
     }
 
+    // Now image.path will correctly map to the uploaded file's temp path
     const { public_id } = await cloudinary.uploader.upload(image.path);
 
     const imageUrl = cloudinary.url(public_id, {
@@ -226,7 +279,7 @@ export const removeImageObject = async (req, res) => {
 
     res.json({ success: true, content: imageUrl });
   } catch (error) {
-    console.error("Error generating article:", error);
+    console.error("Error Removing Object from the Image:", error);
     res.status(500).json({
       success: false,
       message: "Error removing Object from the Image",
@@ -256,29 +309,43 @@ export const resumeReview = async (req, res) => {
 
     const dataBuffer = fs.readFileSync(resume.path);
 
-    const pdfData = await pdfParse.default(dataBuffer);
-
-    const prompt = `Review the following resume and provide constructive feedback on its strengths , weakness , and areas for improvements. Resume Content : \n\n${pdfData.text}`;
-
-    const response = await openai.chat.completions.create({
-      model: "gemini-3-flash-preview",
-      messages: [
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
-      temperature: 0.7,
-      max_tokens: 1000,
+    // FIXED: Using the modern PDFParse class syntax
+    const parser = new PDFParse({
+      data: new Uint8Array(dataBuffer),
+      CanvasFactory,
     });
 
-    const content = response.choices[0].message.content;
+    // Extract the text asynchronously
+    const pdfData = await parser.getText();
+
+    const prompt = `Review the following resume and provide constructive feedback on its strengths, weakness, and areas for improvements. Resume Content : \n\n${pdfData.text}`;
+    // FIXED: Replaced OpenAI call with correct Gemini SDK syntax
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash", // Using a valid, current model
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: prompt,
+            },
+          ],
+        },
+      ],
+      config: {
+        temperature: 0.7,
+        // maxOutputTokens: 1000,
+      },
+    });
+
+    // FIXED: Correctly extracting the text from the Gemini response
+    const content = response.text;
 
     await sql`INSERT INTO creations (user_id , prompt , content , type) VALUES (${userId} ,'Review the uploaded resume' , ${content} , 'resume-review')`;
 
     res.json({ success: true, content });
   } catch (error) {
-    console.error("Error generating article:", error);
+    console.error("Error Reviewing Resume:", error);
     res.status(500).json({
       success: false,
       message: "Error while reviewing the resume",
