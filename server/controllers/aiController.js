@@ -125,7 +125,7 @@ export const generateBlogTitle = async (req, res) => {
           role: "user",
           parts: [
             {
-              text: prompt,
+              text: `Generate 10 catchy blog titles for the topic "${prompt}".Return only the titles, one per line, without numbering.`,
             },
           ],
         },
@@ -136,6 +136,8 @@ export const generateBlogTitle = async (req, res) => {
       },
     });
 
+    console.log("FULL RESPONSE:", response);
+    console.log("TEXT:", response.text);
     // UPDATED: Parsing the response using Gemini's structure
     const content = response.text;
 
@@ -194,7 +196,7 @@ export const generateImage = async (req, res) => {
     const buffer = Buffer.from(data, "binary");
 
     const { secure_url } = await new Promise((resolve, reject) => {
-      const stream = cloudinary.uploader.upload_stream(
+      const stream = cloudinary.uploader.upload_stream(  //upload_stream() is callback-based. Wrapping it in a Promise allows me to use async/await, making the code  cleaner and easier to read.
         { resource_type: "image" },
         (error, result) => {
           if (error) reject(error);
